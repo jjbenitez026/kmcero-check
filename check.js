@@ -1,7 +1,6 @@
 const { chromium } = require('playwright');
-const fs = require('fs');
 
-const config = JSON.parse(fs.readFileSync('config.json', 'utf8'));
+const config = JSON.parse(require('fs').readFileSync('config.json', 'utf8'));
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
@@ -70,22 +69,7 @@ async function sendTelegram(msg) {
     }, { timeout: 30000 });
     console.log('Search page loaded, URL:', page.url());
 
-    await page.screenshot({ path: 'debug_search.png', fullPage: true }).catch(() => {});
-    console.log('Screenshot saved');
-
-    const searchInfo = await page.evaluate(() => {
-      const els = document.querySelectorAll('*');
-      for (const el of els) {
-        if (el.tagName !== 'SCRIPT' && el.tagName !== 'STYLE' &&
-            el.textContent.includes('Disponibilidad') &&
-            !el.textContent.includes('Cargando')) {
-          return { found: true, text: el.textContent.trim().substring(0, 300), tag: el.tagName };
-        }
-      }
-      const body = document.body.innerText;
-      return { found: false, bodyPreview: body.substring(0, 800) };
-    });
-    console.log('Before click:', JSON.stringify(searchInfo));
+    console.log('Search page ready');
 
     const clicked = await page.evaluate((searchTerm) => {
       const lower = searchTerm.toLowerCase();
@@ -120,8 +104,6 @@ async function sendTelegram(msg) {
       }, { timeout: 30000 });
       console.log('Navigated to product page');
     }
-
-    await page.screenshot({ path: 'debug_after.png', fullPage: true }).catch(() => {});
 
     const result = await page.evaluate(() => {
       const allText = document.body.innerText;
