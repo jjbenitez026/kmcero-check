@@ -87,22 +87,33 @@ async function sendTelegram(msg) {
     });
     console.log('Before click:', JSON.stringify(searchInfo));
 
-    const verBtn = page.getByText('Ver').first();
-    if ((await verBtn.count()) === 0) {
-      console.log('No "Ver" button found');
+    const clicked = await page.evaluate((searchTerm) => {
+      const lower = searchTerm.toLowerCase();
+      const cards = document.querySelectorAll('[class*="group"]');
+      for (const card of cards) {
+        const h3 = card.querySelector('h3');
+        if (h3 && h3.textContent.trim().toLowerCase().includes(lower)) {
+          card.scrollIntoView({ block: 'center' });
+          card.click();
+          return { method: 'card', h3: h3.textContent.trim() };
+        }
+      }
+      return null;
+    }, config.productSearch);
+
+    console.log('Click result:', JSON.stringify(clicked));
+
+    if (!clicked) {
+      console.log('Could not find product card on search page');
       await browser.close();
       return;
     }
 
-    await verBtn.scrollIntoViewIfNeeded();
-    const currentUrl = page.url();
-    await verBtn.click({ force: true });
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(5000);
 
     const afterUrl = page.url();
-    console.log('URL after click:', afterUrl, '| changed:', currentUrl !== afterUrl);
-
-    if (currentUrl !== afterUrl) {
+    console.log('URL after click:', afterUrl);
+    if (afterUrl !== searchUrl) {
       await page.waitForFunction(() => {
         const t = document.body.innerText || '';
         return !t.includes('Cargando...');
