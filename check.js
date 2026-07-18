@@ -28,13 +28,13 @@ async function sendTelegram(msg) {
 
     const searchUrl = await page.evaluate((searchTerm) => {
       const lower = searchTerm.toLowerCase();
-
       const cards = document.querySelectorAll('[class*="group"]');
       for (const card of cards) {
         const h3 = card.querySelector('h3');
         if (h3 && h3.textContent.trim().toLowerCase().includes(lower)) {
           const link = card.closest('a');
           if (link) return link.href;
+          return '/shop?search=' + encodeURIComponent(h3.textContent.trim());
         }
         const badge = card.querySelector('[data-slot="badge"]');
         if (badge && badge.textContent.trim().toLowerCase() === lower) {
