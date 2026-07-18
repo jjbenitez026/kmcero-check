@@ -14,51 +14,9 @@ async function sendTelegram(msg) {
   else console.log('Telegram sent');
 }
 
-function walkForProduct(obj, badgeText, depth = 0) {
-  if (depth > 10 || !obj || typeof obj !== 'object') return null;
-
-  if (Array.isArray(obj)) {
-    for (const item of obj) {
-      const r = walkForProduct(item, badgeText, depth + 1);
-      if (r) return r;
-    }
-    return null;
-  }
-
-  const str = JSON.stringify(obj).toLowerCase();
-  if (!str.includes(badgeText.toLowerCase())) return null;
-
-  const name = obj.name || obj.title || obj.productName || '';
-  const haystack = (name + ' ' + JSON.stringify(obj)).toLowerCase();
-  if (!haystack.includes(badgeText.toLowerCase())) return null;
-
-  if (obj.stock !== undefined || obj.quantity !== undefined ||
-      obj.availability !== undefined || obj.disponibilidad !== undefined ||
-      obj.inStock !== undefined || obj.available !== undefined) {
-    return obj;
-  }
-
-  for (const key of Object.keys(obj)) {
-    const r = walkForProduct(obj[key], badgeText, depth + 1);
-    if (r) return r;
-  }
-  return null;
-}
-
 (async () => {
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-
-  const apiResponses = [];
-  page.on('response', async (res) => {
-    const url = res.url();
-    if (url.includes('/api/graphql') && res.status() === 200) {
-      try {
-        const json = await res.json();
-        apiResponses.push({ url, data: json });
-      } catch {}
-    }
-  });
 
   try {
     await page.goto(config.url, { waitUntil: 'networkidle', timeout: 60000 });
@@ -66,56 +24,7 @@ function walkForProduct(obj, badgeText, depth = 0) {
       const t = document.body.innerText || '';
       return !t.includes('Cargando...') && document.querySelector('[data-slot="badge"]');
     }, { timeout: 60000 });
-    console.log('Splash gone, products rendered');
-
-    await page.waitForTimeout(3000);
-
-    console.log('GraphQL responses:', apiResponses.length);
-
-    let productData = null;
-
-    for (const { data } of apiResponses) {
-      const found = walkForProduct(data, config.productBadge);
-      if (found) {
-        productData = found;
-        console.log('Product found:', JSON.stringify(found, null, 2).substring(0, 800));
-        break;
-      }
-    }
-
-    if (productData) {
-      const stock = productData.stock ?? productData.quantity ?? productData.availability ?? productData.disponibilidad;
-      const available = productData.available ?? productData.inStock ?? true;
-      const name = productData.name || productData.title || config.productBadge;
-      const price = productData.price || productData.precio || '';
-
-      let statusText = '';
-      if (typeof stock === 'number') {
-        statusText = stock > 0 ? `${stock} u.` : 'Agotado';
-      } else if (typeof stock === 'string') {
-        statusText = stock;
-      } else {
-        statusText = available ? 'Disponible' : 'Agotado';
-      }
-
-      if (statusText && !statusText.toLowerCase().includes('agotado') && !statusText.toLowerCase().includes('0')) {
-        const msg = [
-          `🟢 <b>${name}</b>`,
-          '',
-          `📦 <b>Disponibilidad:</b> ${statusText}`,
-          price ? `💵 <b>Precio:</b> ${price}` : '',
-          '',
-          `<a href="${config.url}">${config.url}</a>`,
-        ].filter(Boolean).join('\n');
-        await sendTelegram(msg);
-      } else {
-        console.log('Out of stock:', statusText);
-      }
-      await browser.close();
-      return;
-    }
-
-    console.log('Not found in API. Navigating to search URL...');
+    console.log('Main page loaded');
 
     const searchUrl = await page.evaluate((badgeText) => {
       const badges = document.querySelectorAll('[data-slot="badge"]');
@@ -131,48 +40,95 @@ function walkForProduct(obj, badgeText, depth = 0) {
       return null;
     }, config.productBadge);
 
-    if (searchUrl) {
-      console.log('Navigating to:', searchUrl);
-      await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 60000 });
-      await page.waitForTimeout(5000);
-      await page.screenshot({ path: 'debug.png', fullPage: true });
+    if (!searchUrl) {
+      console.log('No product found on main page');
+      await browser.close();
+      return;
+    }
 
-      const pageInfo = await page.evaluate(() => {
-        const all = document.querySelectorAll('*');
-        for (const el of all) {
-          if (el.textContent.includes('Disponibilidad') && !el.textContent.includes('Cargando')) {
-            const text = el.textContent.trim();
-            if (text.toLowerCase().includes('agotado')) {
-              return { type: 'agotado', text };
-            }
-            if (/\d+\s*u\./.test(text)) {
-              return { type: 'available', text: text.match(/(\d+\s*u\.)/)[1] };
-            }
+    console.log('Navigating to:', searchUrl);
+    await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 60000 });
+    await page.waitForFunction(() => {
+      const t = document.body.innerText || '';
+      return !t.includes('Cargando...');
+    }, { timeout: 30000 });
+    console.log('Search page loaded');
+
+    const verBtn = page.getByText('Ver').first();
+    if ((await verBtn.count()) > 0) {
+      console.log('Clicking "Ver" button...');
+      await verBtn.scrollIntoViewIfNeeded();
+      await verBtn.click({ force: true });
+      await page.waitForTimeout(5000);
+    } else {
+      console.log('No "Ver" button found, clicking product card...');
+      const badge = page.locator('[data-slot="badge"]').filter({ hasText: config.productBadge }).first();
+      if ((await badge.count()) > 0) {
+        const card = badge.locator('xpath=ancestor::div[contains(@class, "group")]').first();
+        await card.scrollIntoViewIfNeeded();
+        await card.click({ force: true });
+        await page.waitForTimeout(5000);
+      }
+    }
+
+    await page.screenshot({ path: 'debug.png', fullPage: true });
+
+    const info = await page.evaluate(() => {
+      const allSpans = document.querySelectorAll('span');
+      let disponibilidadText = '';
+
+      for (const s of allSpans) {
+        if (s.textContent.trim() === 'Disponibilidad') {
+          const parent = s.parentElement;
+          if (parent) {
+            const nextSpan = parent.querySelector('span.text-sm.font-semibold');
+            if (nextSpan) disponibilidadText = nextSpan.textContent.trim();
           }
         }
-        const fixedEls = document.querySelectorAll('.fixed');
-        const dialogEls = document.querySelectorAll('[role="dialog"]');
-        return {
-          fixedCount: fixedEls.length,
-          dialogCount: dialogEls.length,
-          bodyStart: document.body.innerText?.substring(0, 500),
-        };
-      });
-
-      console.log('Page state:', JSON.stringify(pageInfo));
-
-      if (pageInfo?.type === 'available') {
-        const msg = [
-          `🟢 <b>${config.productBadge}</b>`,
-          '',
-          `📦 <b>${pageInfo.text}</b>`,
-          '',
-          `<a href="${config.url}">${config.url}</a>`,
-        ].join('\n');
-        await sendTelegram(msg);
       }
+
+      if (!disponibilidadText) {
+        const allEls = document.querySelectorAll('*');
+        for (const el of allEls) {
+          if (el.tagName !== 'SCRIPT' && el.tagName !== 'STYLE' &&
+              el.textContent.includes('Disponibilidad') &&
+              (el.textContent.includes('Agotado') || /\d+\s*u\./.test(el.textContent))) {
+            const text = el.textContent;
+            const agotado = text.toLowerCase().includes('agotado');
+            const match = text.match(/(\d+\s*u\.)/);
+            return {
+              found: true,
+              text: match ? match[1] : (agotado ? 'Agotado' : text.trim().substring(0, 200)),
+              isAgotado: agotado,
+              source: 'dom',
+            };
+          }
+        }
+        return { found: false, text: '', isAgotado: true };
+      }
+
+      return {
+        found: true,
+        text: disponibilidadText,
+        isAgotado: disponibilidadText.toLowerCase().includes('agotado'),
+        source: 'span',
+      };
+    });
+
+    console.log('Disponibilidad:', JSON.stringify(info));
+
+    if (info?.found && !info.isAgotado) {
+      const msg = [
+        `🟢 <b>${config.productBadge}</b>`,
+        '',
+        `📦 <b>Disponibilidad:</b> ${info.text}`,
+        '',
+        `<a href="${config.url}">${config.url}</a>`,
+        `🕐 ${new Date().toLocaleString('es-CU', { timeZone: 'America/Havana' })}`,
+      ].join('\n');
+      await sendTelegram(msg);
     } else {
-      console.log('No search URL found');
+      console.log('Out of stock or not found.');
     }
   } catch (err) {
     console.error('Error:', err.message);
