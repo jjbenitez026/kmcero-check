@@ -41,99 +41,77 @@ async function sendTelegram(msg) {
     }, config.productBadge);
 
     if (!searchUrl) {
-      console.log('No product found on main page');
+      console.log('Product not found on main page');
       await browser.close();
       return;
     }
 
-    console.log('Navigating to:', searchUrl);
     await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForFunction(() => {
       const t = document.body.innerText || '';
       return !t.includes('Cargando...');
     }, { timeout: 30000 });
-    console.log('Search page loaded');
 
     const verBtn = page.getByText('Ver').first();
     if ((await verBtn.count()) > 0) {
-      console.log('Clicking "Ver" button...');
       await verBtn.scrollIntoViewIfNeeded();
       await verBtn.click({ force: true });
-      await page.waitForTimeout(5000);
-    } else {
-      console.log('No "Ver" button found, clicking product card...');
-      const badge = page.locator('[data-slot="badge"]').filter({ hasText: config.productBadge }).first();
-      if ((await badge.count()) > 0) {
-        const card = badge.locator('xpath=ancestor::div[contains(@class, "group")]').first();
-        await card.scrollIntoViewIfNeeded();
-        await card.click({ force: true });
-        await page.waitForTimeout(5000);
-      }
+      await page.waitForTimeout(4000);
     }
-
-    await page.screenshot({ path: 'debug.png', fullPage: true });
 
     const info = await page.evaluate(() => {
       const allSpans = document.querySelectorAll('span');
-      let disponibilidadText = '';
+      let disponibilidad = '', vendedor = '', productName = '', price = '';
 
       for (const s of allSpans) {
-        if (s.textContent.trim() === 'Disponibilidad') {
-          const parent = s.parentElement;
-          if (parent) {
-            const nextSpan = parent.querySelector('span.text-sm.font-semibold');
-            if (nextSpan) disponibilidadText = nextSpan.textContent.trim();
-          }
+        const t = s.textContent.trim();
+        if (t === 'Disponibilidad' && s.nextElementSibling) {
+          disponibilidad = s.nextElementSibling.textContent.trim();
+        }
+        if (t === 'Vendedor' && s.nextElementSibling) {
+          vendedor = s.nextElementSibling.textContent.trim();
         }
       }
 
-      if (!disponibilidadText) {
-        const allEls = document.querySelectorAll('*');
-        for (const el of allEls) {
-          if (el.tagName !== 'SCRIPT' && el.tagName !== 'STYLE' &&
-              el.textContent.includes('Disponibilidad') &&
-              (el.textContent.includes('Agotado') || /\d+\s*u\./.test(el.textContent))) {
-            const text = el.textContent;
-            const agotado = text.toLowerCase().includes('agotado');
-            const match = text.match(/(\d+\s*u\.)/);
-            return {
-              found: true,
-              text: match ? match[1] : (agotado ? 'Agotado' : text.trim().substring(0, 200)),
-              isAgotado: agotado,
-              source: 'dom',
-            };
-          }
+      const firstFields = document.querySelectorAll('.flex.flex-col');
+      for (const f of firstFields) {
+        const spans = f.querySelectorAll('span');
+        if (spans.length >= 2 && spans[0].textContent.trim() === 'Vendedor') {
+          vendedor = spans[1].textContent.trim();
         }
-        return { found: false, text: '', isAgotado: true };
       }
 
-      return {
-        found: true,
-        text: disponibilidadText,
-        isAgotado: disponibilidadText.toLowerCase().includes('agotado'),
-        source: 'span',
-      };
+      const h2 = document.querySelector('.fixed h2, h2');
+      if (h2 && !h2.textContent.includes('KM CERO')) {
+        productName = h2.textContent.trim();
+      }
+
+      const priceEl = document.querySelector('[class*="text-2xl"][class*="font-extrabold"]');
+      if (priceEl) price = priceEl.textContent.trim();
+
+      return { productName, disponibilidad, vendedor, price };
     });
 
-    console.log('Disponibilidad:', JSON.stringify(info));
+    console.log('Status:', info.disponibilidad);
 
-    if (info?.found && !info.isAgotado) {
-      const msg = [
-        `🟢 <b>${config.productBadge}</b>`,
+    if (info.disponibilidad && !info.disponibilidad.toLowerCase().includes('agotado')) {
+      const lines = [
+        `🟢 <b>${info.productName || config.productBadge}</b>`,
         '',
-        `📦 <b>Disponibilidad:</b> ${info.text}`,
-        '',
-        `<a href="${config.url}">${config.url}</a>`,
-        `🕐 ${new Date().toLocaleString('es-CU', { timeZone: 'America/Havana' })}`,
-      ].join('\n');
-      await sendTelegram(msg);
+        `📦 <b>Disponibilidad:</b> ${info.disponibilidad}`,
+      ];
+      if (info.price) lines.push(`💵 <b>Precio:</b> ${info.price}`);
+      if (info.vendedor) lines.push(`🏪 <b>Vendedor:</b> ${info.vendedor}`);
+      lines.push('', `<a href="${config.url}">${config.url}</a>`);
+      lines.push(`🕐 ${new Date().toLocaleString('es-CU', { timeZone: 'America/Havana' })}`);
+
+      await sendTelegram(lines.join('\n'));
     } else {
-      console.log('Out of stock or not found.');
+      console.log('Out of stock. No notification.');
     }
   } catch (err) {
     console.error('Error:', err.message);
   } finally {
-    await page.screenshot({ path: 'debug.png', fullPage: true }).catch(() => {});
     await browser.close();
   }
 })();
