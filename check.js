@@ -26,22 +26,40 @@ async function sendTelegram(msg) {
     }, { timeout: 60000 });
     console.log('Main page loaded');
 
-    const searchUrl = await page.evaluate((badgeText) => {
-      const badges = document.querySelectorAll('[data-slot="badge"]');
-      for (const b of badges) {
-        if (b.textContent.trim().toLowerCase() === badgeText.toLowerCase()) {
-          const card = b.closest('[class*="group"]');
-          if (card) {
-            const link = card.closest('a');
-            if (link) return link.href;
-          }
+    const searchUrl = await page.evaluate((searchTerm) => {
+      const lower = searchTerm.toLowerCase();
+
+      const cards = document.querySelectorAll('[class*="group"]');
+      for (const card of cards) {
+        const h3 = card.querySelector('h3');
+        if (h3 && h3.textContent.trim().toLowerCase().includes(lower)) {
+          const link = card.closest('a');
+          if (link) return link.href;
+        }
+        const badge = card.querySelector('[data-slot="badge"]');
+        if (badge && badge.textContent.trim().toLowerCase() === lower) {
+          const link = card.closest('a');
+          if (link) return link.href;
         }
       }
       return null;
-    }, config.productBadge);
+    }, config.productSearch);
 
     if (!searchUrl) {
-      console.log('Product not found on main page');
+      const available = await page.evaluate(() => {
+        const cards = document.querySelectorAll('[class*="group"]');
+        const items = [];
+        for (const card of cards) {
+          const badge = card.querySelector('[data-slot="badge"]');
+          const h3 = card.querySelector('h3');
+          items.push({
+            badge: badge ? badge.textContent.trim() : '',
+            title: h3 ? h3.textContent.trim() : '',
+          });
+        }
+        return items.filter(i => i.badge || i.title);
+      });
+      console.log('Product not found. Available products:', JSON.stringify(available, null, 2));
       await browser.close();
       return;
     }
@@ -96,7 +114,7 @@ async function sendTelegram(msg) {
 
     if (info.disponibilidad && !info.disponibilidad.toLowerCase().includes('agotado')) {
       const lines = [
-        `🟢 <b>${info.productName || config.productBadge}</b>`,
+        `🟢 <b>${info.productName || config.productSearch}</b>`,
         '',
         `📦 <b>Disponibilidad:</b> ${info.disponibilidad}`,
       ];
