@@ -34,7 +34,7 @@ async function sendTelegram(msg) {
         if (h3 && h3.textContent.trim().toLowerCase().includes(lower)) {
           const link = card.closest('a');
           if (link) return link.href;
-          return '/shop?search=' + encodeURIComponent(h3.textContent.trim());
+          return window.location.origin + '/shop?search=' + encodeURIComponent(h3.textContent.trim());
         }
         const badge = card.querySelector('[data-slot="badge"]');
         if (badge && badge.textContent.trim().toLowerCase() === lower) {
