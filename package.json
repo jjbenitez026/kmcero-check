@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "scripts": {
+    "check": "node check.js"
+  },
+  "dependencies": {
+    "playwright": "^1.52.0"
+  }
+}
