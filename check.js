@@ -89,6 +89,7 @@ async function sendTelegram(msg) {
   } catch (err) {
     console.error('Error:', err.message);
   } finally {
+    await page.screenshot({ path: 'debug.png', fullPage: true }).catch(() => {});
     await browser.close();
   }
 })();
