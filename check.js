@@ -27,126 +27,87 @@ async function sendTelegram(message) {
   console.log(`Checking: "${config.productBadge}"`);
 
   const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-
-  const responses = [];
-  page.on('response', res => {
-    const url = res.url();
-    if (url.includes('/api/')) {
-      responses.push({ url, status: res.status() });
-    }
-  });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await context.newPage();
 
   try {
     await page.goto(config.url, { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForSelector('[data-slot="badge"]', { timeout: 45000 });
+    console.log('Page loaded, products rendered');
 
-    console.log('API endpoints found:');
-    responses.forEach(r => console.log(`  ${r.status} ${r.url}`));
+    const h3 = page.locator('h3').filter({ hasText: config.productBadge }).first();
+    const h3Count = await h3.count();
 
-    let apiBase = null;
-    for (const r of responses) {
-      if (r.status === 200 && (r.url.includes('/products') || r.url.includes('/shop'))) {
-        apiBase = r.url;
-        break;
-      }
+    if (h3Count === 0) {
+      console.log('Product not found by h3 text');
+      await browser.close();
+      return;
     }
 
-    await page.screenshot({ path: 'debug_initial.png' });
+    console.log('Product found, clicking h3...');
+    await h3.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(500);
+    await h3.click({ force: true, timeout: 10000 });
+    console.log('Clicked h3');
 
-    const clicked = await page.evaluate((badgeText) => {
-      const spans = document.querySelectorAll('span');
-      for (const span of spans) {
-        if (span.textContent.trim() === badgeText) {
-          const card = span.closest('[class*="group"]') || span.closest('[class*="cursor"]');
-          if (card) {
-            card.scrollIntoView({ block: 'center' });
-            const rect = card.getBoundingClientRect();
-            const clickEvent = new MouseEvent('click', {
-              bubbles: true,
-              cancelable: true,
-              view: window,
-              clientX: rect.left + rect.width / 2,
-              clientY: rect.top + rect.height / 2,
-            });
-            card.dispatchEvent(clickEvent);
-            return 'dispatched click on card';
-          }
-          return 'card not found';
-        }
-      }
-      return 'badge not found';
-    }, config.productBadge);
+    await page.waitForTimeout(5000);
 
-    console.log('Click result:', clicked);
-    await page.waitForTimeout(4000);
+    await page.screenshot({ path: 'debug.png' });
+    console.log('Screenshot saved');
 
-    await page.screenshot({ path: 'debug_after_click.png' });
+    const html = await page.content();
+    fs.writeFileSync('debug.html', html.substring(0, 100000));
+    console.log('HTML saved');
 
-    const modalCheck = await page.evaluate(() => {
-      const fixed = document.querySelectorAll('.fixed');
-      const result = { fixedCount: fixed.length, details: [] };
-      for (const el of fixed) {
-        const rect = el.getBoundingClientRect();
-        result.details.push({
-          classes: el.className.substring(0, 100),
-          visible: rect.width > 0 && rect.height > 0,
-          opacity: window.getComputedStyle(el).opacity,
-          zIndex: window.getComputedStyle(el).zIndex,
-          hasH2: !!el.querySelector('h2'),
-          h2Text: el.querySelector('h2')?.textContent?.substring(0, 80),
-        });
-      }
-      return result;
-    });
+    const disponibilidad = await page.evaluate(() => {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let node;
+      while (node = walker.nextNode()) {
+        if (node.textContent.includes('Disponibilidad')) {
+          const parent = node.parentElement;
+          if (!parent) continue;
+          const container = parent.closest('[class]');
+          if (!container) continue;
 
-    console.log('Fixed overlays after click:', JSON.stringify(modalCheck, null, 2));
+          const fullSection = container.closest('.flex') || container.parentElement?.closest('.flex') || container;
+          const sectionHTML = fullSection ? fullSection.outerHTML : container.outerHTML;
 
-    const fullSearch = await page.evaluate(() => {
-      const all = document.querySelectorAll('*');
-      for (const el of all) {
-        if (el.textContent.includes('Disponibilidad')) {
+          const allText = fullSection ? fullSection.textContent : container.textContent;
+          const statusMatch = allText.match(/(\d+\s*u\.|Agotado)/i);
+          const status = statusMatch ? statusMatch[1] : '';
+
+          const isAgotado = allText.toLowerCase().includes('agotado');
+
           return {
-            tag: el.tagName,
-            classes: el.className.substring(0, 200),
-            parentClasses: el.parentElement?.className?.substring(0, 200),
-            grandparentClasses: el.parentElement?.parentElement?.className?.substring(0, 200),
-            fullText: el.textContent.trim().substring(0, 300),
-            outerHTML: el.parentElement?.parentElement?.outerHTML?.substring(0, 500),
+            text: allText.trim().substring(0, 300),
+            status,
+            isAgotado,
+            sectionHTML: sectionHTML.substring(0, 500),
           };
         }
       }
       return null;
     });
 
-    if (fullSearch) {
-      console.log('Found disponibilidad:', JSON.stringify(fullSearch, null, 2));
+    if (disponibilidad) {
+      console.log('Disponibilidad found:', disponibilidad.text);
 
-      const statusText = fullSearch.fullText.replace('Disponibilidad', '').trim();
-      const isAvailable = !statusText.toLowerCase().includes('agotado');
-
-      if (isAvailable) {
-        const productName = await page.evaluate(() => {
-          const h2 = document.querySelector('.fixed h2, [role="dialog"] h2, [aria-label*="producto"] h2');
-          return h2 ? h2.textContent.trim() : '';
-        });
-
+      if (!disponibilidad.isAgotado) {
+        const productName = await page.locator('h2').first().textContent().catch(() => '');
         const message = [
-          `🟢 <b>${productName || 'Producto disponible'}</b>`,
+          `🟢 <b>${productName || config.productBadge}</b>`,
           '',
-          `📦 <b>Disponibilidad:</b> ${statusText}`,
+          `📦 <b>${disponibilidad.text}</b>`,
           '',
           `<a href="${config.url}">${config.url}</a>`,
           `🕐 ${new Date().toLocaleString('es-CU', { timeZone: 'America/Havana' })}`,
         ].join('\n');
-
         await sendTelegram(message);
       } else {
         console.log('Out of stock.');
       }
     } else {
-      console.log('Disponibilidad not found anywhere in DOM');
-      fs.writeFileSync('debug_body.html', await page.evaluate(() => document.body.innerHTML.substring(0, 100000)));
+      console.log('Disponibilidad text NOT FOUND anywhere on page');
     }
   } catch (err) {
     console.error('Error:', err.message);
