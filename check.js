@@ -45,49 +45,114 @@ async function sendTelegram(message) {
     await page.waitForSelector('[data-slot="badge"]', { timeout: 45000 });
     console.log('Products rendered');
 
-    const badges = page.locator('[data-slot="badge"]');
-    const count = await badges.count();
-    let productCard = null;
-
-    for (let i = 0; i < count; i++) {
-      const text = await badges.nth(i).textContent();
-      if (text.trim().toLowerCase() === config.productBadge.trim().toLowerCase()) {
-        productCard = badges.nth(i).locator('xpath=ancestor::div[contains(@class, "group")]');
-        break;
+    const found = await page.evaluate((badgeText) => {
+      const badges = document.querySelectorAll('[data-slot="badge"]');
+      for (const badge of badges) {
+        if (badge.textContent.trim().toLowerCase() === badgeText.toLowerCase()) {
+          const card = badge.closest('[class*="group"]');
+          if (card) {
+            card.scrollIntoView({ behavior: 'instant', block: 'center' });
+            card.click();
+            return true;
+          }
+        }
       }
-    }
+      return false;
+    }, config.productBadge);
 
-    if (!productCard) {
+    if (!found) {
       console.log(`Product "${config.productBadge}" not found`);
       await browser.close();
       return;
     }
 
-    console.log('Product found, clicking...');
-    await productCard.click();
+    console.log('Product found and clicked');
 
-    const modal = page.locator('.fixed.inset-0.z-52');
-    await modal.waitFor({ state: 'visible', timeout: 15000 });
-    console.log('Modal opened');
+    await page.waitForTimeout(3000);
 
-    const productName = (await modal.locator('h2').first().textContent()).trim();
-    const statusText = (await modal.locator('span:has-text("Disponibilidad") + span').textContent()).trim();
+    const modalOpened = await page.evaluate(() => {
+      const fixed = document.querySelectorAll('.fixed');
+      for (const el of fixed) {
+        if (el.classList.contains('inset-0') &&
+            (el.classList.contains('z-50') || el.classList.contains('z-52')) &&
+            el.querySelector('h2')) {
+          return el.outerHTML.includes('Disponibilidad');
+        }
+      }
+      return false;
+    });
 
-    console.log(`Product: ${productName}`);
-    console.log(`Status: "${statusText}"`);
+    if (!modalOpened) {
+      console.log('Modal did not open');
+      await browser.close();
+      return;
+    }
 
-    const isAvailable = !statusText.toLowerCase().includes('agotado');
+    console.log('Modal detected');
+
+    const info = await page.evaluate(() => {
+      const fixed = document.querySelectorAll('.fixed');
+      let modal = null;
+      for (const el of fixed) {
+        if (el.classList.contains('inset-0') &&
+            (el.classList.contains('z-50') || el.classList.contains('z-52')) &&
+            el.querySelector('h2')) {
+          modal = el;
+          break;
+        }
+      }
+      if (!modal) return null;
+
+      const h2 = modal.querySelector('h2');
+      const productName = h2 ? h2.textContent.trim() : '';
+
+      const allSpans = modal.querySelectorAll('span');
+      let statusText = '';
+      let sellerText = '';
+
+      for (const span of allSpans) {
+        if (span.textContent.trim() === 'Disponibilidad') {
+          const parent = span.parentElement;
+          if (parent) {
+            const statusSpan = parent.querySelector('span.text-sm.font-semibold');
+            if (statusSpan) statusText = statusSpan.textContent.trim();
+          }
+        }
+        if (span.textContent.trim() === 'Vendedor') {
+          const parent = span.parentElement;
+          if (parent) {
+            const sellerSpan = parent.querySelector('span.font-semibold:not(.text-\\[10px\\])');
+            if (sellerSpan) sellerText = sellerSpan.textContent.trim();
+          }
+        }
+      }
+
+      const priceEl = modal.querySelector('p.text-2xl');
+      const priceText = priceEl ? priceEl.textContent.trim() : '';
+
+      return { productName, statusText, sellerText, priceText };
+    });
+
+    if (!info || !info.statusText) {
+      console.log('Could not extract product info');
+      await browser.close();
+      return;
+    }
+
+    console.log(`Product: ${info.productName}`);
+    console.log(`Status: "${info.statusText}"`);
+    console.log(`Seller: ${info.sellerText}`);
+    console.log(`Price: ${info.priceText}`);
+
+    const isAvailable = !info.statusText.toLowerCase().includes('agotado');
 
     if (isAvailable) {
-      const priceText = (await modal.locator('p.text-2xl.font-extrabold').first().textContent()).trim();
-      const sellerText = (await modal.locator('span:has-text("Vendedor") + span').textContent()).trim();
-
       const message = [
-        `🟢 <b>${productName}</b>`,
+        `🟢 <b>${info.productName}</b>`,
         '',
-        `📦 <b>Disponibilidad:</b> ${statusText}`,
-        `💵 <b>Precio:</b> ${priceText}`,
-        `🏪 <b>Vendedor:</b> ${sellerText}`,
+        `📦 <b>Disponibilidad:</b> ${info.statusText}`,
+        `💵 <b>Precio:</b> ${info.priceText}`,
+        `🏪 <b>Vendedor:</b> ${info.sellerText}`,
         '',
         `<a href="${config.url}">${config.url}</a>`,
         `🕐 ${new Date().toLocaleString('es-CU', { timeZone: 'America/Havana' })}`,
@@ -99,9 +164,6 @@ async function sendTelegram(message) {
     }
   } catch (err) {
     console.error('Error:', err.message);
-    try {
-      await sendTelegram(`❌ Error checking "${config.productBadge}": ${err.message}`);
-    } catch (_) {}
   } finally {
     await browser.close();
   }
